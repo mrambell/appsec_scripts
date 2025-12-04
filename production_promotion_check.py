@@ -224,11 +224,11 @@ class VulnerabilityAssessment:
         resolved_cves = prod_cves - cert_cves
         common_cves = cert_cves & prod_cves
         
-        # Analyze severity changes
-        severity_regression = self._check_severity_regression(cert_vulns, prod_vulns)
+        # Analyze severity changes per PGI
+        severity_regression_result = self._check_severity_regression_per_pgi(cert_vulns, prod_vulns)
         
-        # Check for vulnerable function usage changes
-        vuln_function_regression = self._check_vulnerable_function_regression(cert_vulns, prod_vulns)
+        # Check for vulnerable function usage changes per PGI
+        vuln_function_regression_result = self._check_vulnerable_function_regression_per_pgi(cert_vulns, prod_vulns)
         
         comparison = {
             'new_vulnerabilities': list(new_cves),
@@ -237,66 +237,159 @@ class VulnerabilityAssessment:
             'resolved_vulnerabilities_count': len(resolved_cves),
             'common_vulnerabilities': list(common_cves),
             'common_vulnerabilities_count': len(common_cves),
-            'severity_regression': severity_regression,
-            'vulnerable_function_regression': vuln_function_regression,
-            'has_regression': len(new_cves) > 0 or severity_regression or vuln_function_regression
+            'severity_regression': severity_regression_result['has_regression'],
+            'severity_regression_details': severity_regression_result['regressions'],
+            'vulnerable_function_regression': vuln_function_regression_result['has_regression'],
+            'vulnerable_function_regression_details': vuln_function_regression_result['regressions'],
+            'has_regression': len(new_cves) > 0 or severity_regression_result['has_regression'] or vuln_function_regression_result['has_regression']
         }
         
         print(f"  New vulnerabilities: {Colors.RED if len(new_cves) > 0 else Colors.GREEN}{len(new_cves)}{Colors.END}")
         print(f"  Resolved vulnerabilities: {Colors.GREEN}{len(resolved_cves)}{Colors.END}")
         print(f"  Common vulnerabilities: {len(common_cves)}")
-        print(f"  Severity regression: {Colors.RED if severity_regression else Colors.GREEN}{severity_regression}{Colors.END}")
-        print(f"  Vulnerable function regression: {Colors.RED if vuln_function_regression else Colors.GREEN}{vuln_function_regression}{Colors.END}\n")
+        print(f"  Severity regressions: {Colors.RED if severity_regression_result['has_regression'] else Colors.GREEN}{len(severity_regression_result['regressions'])}{Colors.END}")
+        print(f"  Vulnerable function regressions: {Colors.RED if vuln_function_regression_result['has_regression'] else Colors.GREEN}{len(vuln_function_regression_result['regressions'])}{Colors.END}\n")
         
         return comparison
     
-    def _check_severity_regression(self, cert_vulns: List[Dict], prod_vulns: List[Dict]) -> bool:
-        """Check if any vulnerability has increased in severity"""
-        # Build severity map for production
+    def _check_severity_regression_per_pgi(self, cert_vulns: List[Dict], prod_vulns: List[Dict]) -> Dict:
+        """Check if any vulnerability has increased in severity within the filtered scope"""
+        # Build severity map for production CVEs (within scope): {CVE: severity}
+        # Note: Vulnerabilities are already filtered by MZ/Host List in _fetch_vulnerabilities
         prod_severity_map = {}
         for vuln in prod_vulns:
             cve = vuln.get('cveId')
-            if cve:
-                prod_severity_map[cve] = vuln.get('riskAssessment', {}).get('riskLevel', 'NONE')
+            if not cve:
+                continue
+            
+            risk_level = vuln.get('riskAssessment', {}).get('riskLevel', 'NONE')
+            
+            # Track the highest severity seen for this CVE in production scope
+            if cve not in prod_severity_map:
+                prod_severity_map[cve] = risk_level
+            else:
+                # Keep the highest severity if CVE appears multiple times
+                severity_order = {'NONE': 0, 'LOW': 1, 'MEDIUM': 2, 'HIGH': 3, 'CRITICAL': 4}
+                if severity_order.get(risk_level, 0) > severity_order.get(prod_severity_map[cve], 0):
+                    prod_severity_map[cve] = risk_level
         
-        # Check if any cert vulnerability has higher severity
+        # Check if any cert vulnerability has higher severity than in production scope
         severity_order = {'NONE': 0, 'LOW': 1, 'MEDIUM': 2, 'HIGH': 3, 'CRITICAL': 4}
+        regressions = []
         
+        # Track highest severity per CVE in certification
+        cert_severity_map = {}
         for vuln in cert_vulns:
             cve = vuln.get('cveId')
-            if cve and cve in prod_severity_map:
-                cert_severity = vuln.get('riskAssessment', {}).get('riskLevel', 'NONE')
+            if not cve:
+                continue
+            
+            cert_risk_level = vuln.get('riskAssessment', {}).get('riskLevel', 'NONE')
+            
+            # Track the highest severity seen for this CVE in certification scope
+            if cve not in cert_severity_map:
+                cert_severity_map[cve] = cert_risk_level
+            else:
+                if severity_order.get(cert_risk_level, 0) > severity_order.get(cert_severity_map[cve], 0):
+                    cert_severity_map[cve] = cert_risk_level
+        
+        # Compare CVE severities between environments
+        for cve, cert_severity in cert_severity_map.items():
+            if cve in prod_severity_map:
                 prod_severity = prod_severity_map[cve]
                 
+                # Check if severity increased in certification scope vs production scope
                 if severity_order.get(cert_severity, 0) > severity_order.get(prod_severity, 0):
-                    self.logger.warning(f"Severity regression detected for {cve}: {prod_severity} → {cert_severity}")
-                    return True
+                    regression_info = {
+                        'cve': cve,
+                        'prod_severity': prod_severity,
+                        'cert_severity': cert_severity,
+                        'scope': 'Filtered by MZ/Host List'
+                    }
+                    regressions.append(regression_info)
+                    self.logger.warning(
+                        f"Severity regression for {cve} in filtered scope: "
+                        f"{prod_severity} → {cert_severity}"
+                    )
         
-        return False
+        return {
+            'has_regression': len(regressions) > 0,
+            'regressions': regressions
+        }
     
-    def _check_vulnerable_function_regression(self, cert_vulns: List[Dict], prod_vulns: List[Dict]) -> bool:
-        """Check if vulnerable functions are now in use when they weren't before"""
-        # Build vulnerable function map for production
+    def _check_vulnerable_function_regression_per_pgi(self, cert_vulns: List[Dict], prod_vulns: List[Dict]) -> Dict:
+        """Check if vulnerable functions are now in use when they weren't before within the filtered scope"""
+        # Build vulnerable function map for production CVEs (within scope): {CVE: usage}
+        # Note: Vulnerabilities are already filtered by MZ/Host List in _fetch_vulnerabilities
         prod_vuln_func_map = {}
         for vuln in prod_vulns:
             cve = vuln.get('cveId')
-            if cve:
-                vuln_func_in_use = vuln.get('riskAssessment', {}).get('vulnerableFunctionUsage', 'NOT_AVAILABLE')
-                prod_vuln_func_map[cve] = vuln_func_in_use
+            if not cve:
+                continue
+            
+            vuln_func_usage = vuln.get('riskAssessment', {}).get('vulnerableFunctionUsage', 'NOT_AVAILABLE')
+            
+            # Track the "worst" usage state for this CVE in production scope
+            # Priority: IN_USE > NOT_AVAILABLE > NOT_IN_USE
+            if cve not in prod_vuln_func_map:
+                prod_vuln_func_map[cve] = vuln_func_usage
+            else:
+                # Keep IN_USE if found anywhere, otherwise keep NOT_AVAILABLE over NOT_IN_USE
+                current = prod_vuln_func_map[cve]
+                if vuln_func_usage == 'IN_USE':
+                    prod_vuln_func_map[cve] = 'IN_USE'
+                elif vuln_func_usage == 'NOT_AVAILABLE' and current == 'NOT_IN_USE':
+                    prod_vuln_func_map[cve] = 'NOT_AVAILABLE'
         
-        # Check for regressions
+        # Check for regressions in certification scope
+        regressions = []
+        
+        # Track the "worst" usage state per CVE in certification
+        cert_vuln_func_map = {}
         for vuln in cert_vulns:
             cve = vuln.get('cveId')
-            if cve and cve in prod_vuln_func_map:
-                cert_usage = vuln.get('riskAssessment', {}).get('vulnerableFunctionUsage', 'NOT_AVAILABLE')
+            if not cve:
+                continue
+            
+            cert_usage = vuln.get('riskAssessment', {}).get('vulnerableFunctionUsage', 'NOT_AVAILABLE')
+            
+            if cve not in cert_vuln_func_map:
+                cert_vuln_func_map[cve] = cert_usage
+            else:
+                current = cert_vuln_func_map[cve]
+                if cert_usage == 'IN_USE':
+                    cert_vuln_func_map[cve] = 'IN_USE'
+                elif cert_usage == 'NOT_AVAILABLE' and current == 'NOT_IN_USE':
+                    cert_vuln_func_map[cve] = 'NOT_AVAILABLE'
+        
+        # Compare CVE vulnerable function usage between environments
+        for cve, cert_usage in cert_vuln_func_map.items():
+            if cve in prod_vuln_func_map:
                 prod_usage = prod_vuln_func_map[cve]
                 
                 # Regression if cert has IN_USE when prod had NOT_IN_USE
                 if cert_usage == 'IN_USE' and prod_usage == 'NOT_IN_USE':
-                    self.logger.warning(f"Vulnerable function regression for {cve}: {prod_usage} → {cert_usage}")
-                    return True
+                    regression_info = {
+                        'cve': cve,
+                        'prod_usage': prod_usage,
+                        'cert_usage': cert_usage,
+                        'scope': 'Filtered by MZ/Host List'
+                    }
+                    regressions.append(regression_info)
+                    self.logger.warning(
+                        f"Vulnerable function regression for {cve} in filtered scope: "
+                        f"{prod_usage} → {cert_usage}"
+                    )
         
-        return False
+        return {
+            'has_regression': len(regressions) > 0,
+            'regressions': regressions
+        }
+        
+        return {
+            'has_regression': len(regressions) > 0,
+            'regressions': regressions
+        }
     
     def _make_decision(self, results: Dict) -> Dict:
         """Make GO/NO-GO decision based on assessment results"""
