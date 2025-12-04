@@ -265,12 +265,16 @@ class VulnerabilityAssessment:
         prod_cves = set()
         
         for vuln in cert_vulns:
-            if 'cveId' in vuln:
-                cert_cves.add(vuln['cveId'])
+            if 'cveIds' in vuln:
+                # cveIds is an array, add all CVEs
+                for cve_id in vuln['cveIds']:
+                    cert_cves.add(cve_id)
         
         for vuln in prod_vulns:
-            if 'cveId' in vuln:
-                prod_cves.add(vuln['cveId'])
+            if 'cveIds' in vuln:
+                # cveIds is an array, add all CVEs
+                for cve_id in vuln['cveIds']:
+                    prod_cves.add(cve_id)
         
         # Calculate differences
         new_cves = cert_cves - prod_cves
@@ -311,20 +315,21 @@ class VulnerabilityAssessment:
         # Note: Vulnerabilities are already filtered by MZ/Host List in _fetch_vulnerabilities
         prod_severity_map = {}
         for vuln in prod_vulns:
-            cve = vuln.get('cveId')
-            if not cve:
+            cve_ids = vuln.get('cveIds', [])
+            if not cve_ids:
                 continue
             
             risk_level = vuln.get('riskAssessment', {}).get('riskLevel', 'NONE')
             
-            # Track the highest severity seen for this CVE in production scope
-            if cve not in prod_severity_map:
-                prod_severity_map[cve] = risk_level
-            else:
-                # Keep the highest severity if CVE appears multiple times
-                severity_order = {'NONE': 0, 'LOW': 1, 'MEDIUM': 2, 'HIGH': 3, 'CRITICAL': 4}
-                if severity_order.get(risk_level, 0) > severity_order.get(prod_severity_map[cve], 0):
+            # Track the highest severity seen for each CVE in production scope
+            for cve in cve_ids:
+                if cve not in prod_severity_map:
                     prod_severity_map[cve] = risk_level
+                else:
+                    # Keep the highest severity if CVE appears multiple times
+                    severity_order = {'NONE': 0, 'LOW': 1, 'MEDIUM': 2, 'HIGH': 3, 'CRITICAL': 4}
+                    if severity_order.get(risk_level, 0) > severity_order.get(prod_severity_map[cve], 0):
+                        prod_severity_map[cve] = risk_level
         
         # Check if any cert vulnerability has higher severity than in production scope
         severity_order = {'NONE': 0, 'LOW': 1, 'MEDIUM': 2, 'HIGH': 3, 'CRITICAL': 4}
@@ -333,18 +338,19 @@ class VulnerabilityAssessment:
         # Track highest severity per CVE in certification
         cert_severity_map = {}
         for vuln in cert_vulns:
-            cve = vuln.get('cveId')
-            if not cve:
+            cve_ids = vuln.get('cveIds', [])
+            if not cve_ids:
                 continue
             
             cert_risk_level = vuln.get('riskAssessment', {}).get('riskLevel', 'NONE')
             
-            # Track the highest severity seen for this CVE in certification scope
-            if cve not in cert_severity_map:
-                cert_severity_map[cve] = cert_risk_level
-            else:
-                if severity_order.get(cert_risk_level, 0) > severity_order.get(cert_severity_map[cve], 0):
+            # Track the highest severity seen for each CVE in certification scope
+            for cve in cve_ids:
+                if cve not in cert_severity_map:
                     cert_severity_map[cve] = cert_risk_level
+                else:
+                    if severity_order.get(cert_risk_level, 0) > severity_order.get(cert_severity_map[cve], 0):
+                        cert_severity_map[cve] = cert_risk_level
         
         # Compare CVE severities between environments
         for cve, cert_severity in cert_severity_map.items():
@@ -374,51 +380,53 @@ class VulnerabilityAssessment:
         """Check if vulnerable functions are now in use when they weren't before within the filtered scope"""
         # Build vulnerable function map for production CVEs (within scope): {CVE: usage}
         # Note: Vulnerabilities are already filtered by MZ/Host List in _fetch_vulnerabilities
-        prod_vuln_func_map = {}
+        prod_function_map = {}
         for vuln in prod_vulns:
-            cve = vuln.get('cveId')
-            if not cve:
+            cve_ids = vuln.get('cveIds', [])
+            if not cve_ids:
                 continue
             
             vuln_func_usage = vuln.get('riskAssessment', {}).get('vulnerableFunctionUsage', 'NOT_AVAILABLE')
             
-            # Track the "worst" usage state for this CVE in production scope
+            # Track the "worst" usage state for each CVE in production scope
             # Priority: IN_USE > NOT_AVAILABLE > NOT_IN_USE
-            if cve not in prod_vuln_func_map:
-                prod_vuln_func_map[cve] = vuln_func_usage
-            else:
-                # Keep IN_USE if found anywhere, otherwise keep NOT_AVAILABLE over NOT_IN_USE
-                current = prod_vuln_func_map[cve]
-                if vuln_func_usage == 'IN_USE':
-                    prod_vuln_func_map[cve] = 'IN_USE'
-                elif vuln_func_usage == 'NOT_AVAILABLE' and current == 'NOT_IN_USE':
-                    prod_vuln_func_map[cve] = 'NOT_AVAILABLE'
+            for cve in cve_ids:
+                if cve not in prod_function_map:
+                    prod_function_map[cve] = vuln_func_usage
+                else:
+                    # Keep IN_USE if found anywhere, otherwise keep NOT_AVAILABLE over NOT_IN_USE
+                    current = prod_function_map[cve]
+                    if vuln_func_usage == 'IN_USE':
+                        prod_function_map[cve] = 'IN_USE'
+                    elif vuln_func_usage == 'NOT_AVAILABLE' and current == 'NOT_IN_USE':
+                        prod_function_map[cve] = 'NOT_AVAILABLE'
         
         # Check for regressions in certification scope
         regressions = []
         
         # Track the "worst" usage state per CVE in certification
-        cert_vuln_func_map = {}
+        cert_function_map = {}
         for vuln in cert_vulns:
-            cve = vuln.get('cveId')
-            if not cve:
+            cve_ids = vuln.get('cveIds', [])
+            if not cve_ids:
                 continue
             
             cert_usage = vuln.get('riskAssessment', {}).get('vulnerableFunctionUsage', 'NOT_AVAILABLE')
             
-            if cve not in cert_vuln_func_map:
-                cert_vuln_func_map[cve] = cert_usage
-            else:
-                current = cert_vuln_func_map[cve]
-                if cert_usage == 'IN_USE':
-                    cert_vuln_func_map[cve] = 'IN_USE'
-                elif cert_usage == 'NOT_AVAILABLE' and current == 'NOT_IN_USE':
-                    cert_vuln_func_map[cve] = 'NOT_AVAILABLE'
+            for cve in cve_ids:
+                if cve not in cert_function_map:
+                    cert_function_map[cve] = cert_usage
+                else:
+                    current = cert_function_map[cve]
+                    if cert_usage == 'IN_USE':
+                        cert_function_map[cve] = 'IN_USE'
+                    elif cert_usage == 'NOT_AVAILABLE' and current == 'NOT_IN_USE':
+                        cert_function_map[cve] = 'NOT_AVAILABLE'
         
         # Compare CVE vulnerable function usage between environments
-        for cve, cert_usage in cert_vuln_func_map.items():
-            if cve in prod_vuln_func_map:
-                prod_usage = prod_vuln_func_map[cve]
+        for cve, cert_usage in cert_function_map.items():
+            if cve in prod_function_map:
+                prod_usage = prod_function_map[cve]
                 
                 # Regression if cert has IN_USE when prod had NOT_IN_USE
                 if cert_usage == 'IN_USE' and prod_usage == 'NOT_IN_USE':
@@ -543,7 +551,8 @@ class VulnerabilityAssessment:
             return
         
         for vuln in vulnerabilities:
-            vuln_name = vuln.get('title', vuln.get('cveId', 'Unknown'))
+            cve_ids = vuln.get('cveIds', [])
+            vuln_name = vuln.get('title', cve_ids[0] if cve_ids else 'Unknown')
             risk_score = vuln.get('riskAssessment', {}).get('riskScore', 'N/A')
             risk_level = vuln.get('riskAssessment', {}).get('riskLevel', 'UNKNOWN')
             vuln_func = vuln.get('riskAssessment', {}).get('vulnerableFunctionUsage', 'NOT_AVAILABLE')
@@ -674,7 +683,7 @@ class ReportGenerator:
         
         writer.writerow([
             env,
-            vuln.get('cveId', 'N/A'),
+            ','.join(vuln.get('cveIds', [])) if vuln.get('cveIds') else 'N/A',
             vuln.get('title', 'Unknown'),
             risk_assessment.get('riskLevel', 'UNKNOWN'),
             risk_assessment.get('riskScore', 'N/A'),
@@ -695,7 +704,7 @@ class ReportGenerator:
         for vuln in vulnerabilities:
             formatted_vuln = {
                 'vulnerability_id': vuln.get('securityProblemId', 'Unknown'),
-                'cve_id': vuln.get('cveId', 'N/A'),
+                'cve_ids': vuln.get('cveIds', []),
                 'title': vuln.get('title', 'Unknown'),
                 'status': vuln.get('status', 'UNKNOWN'),
                 'risk_assessment': vuln.get('riskAssessment', {}),
