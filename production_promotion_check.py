@@ -22,6 +22,7 @@ import logging.config
 from argparse import ArgumentParser
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dynatrace_api import DynatraceApi
 
 # ANSI Color codes for terminal output
@@ -41,6 +42,9 @@ class VulnerabilityAssessment:
         self.verbose = verbose
         self.mode = config.get('mode', 'evaluate').lower()
         self.logger = logging.getLogger(__name__)
+        
+        # Parallel execution settings
+        self.max_workers = config.get('max_workers', 10)  # Default to 10 concurrent requests
         
         # Initialize Dynatrace API clients
         self._init_api_clients()
@@ -151,53 +155,101 @@ class VulnerabilityAssessment:
         
         return enriched_vulns
     
+    def _fetch_vulnerability_details(self, vuln_id: str, api: DynatraceApi) -> Optional[Dict]:
+        """Fetch details for a single vulnerability (used in parallel execution)"""
+        try:
+            return api.getSecurityProblemDetails(vuln_id)
+        except Exception as e:
+            self.logger.error(f"Failed to fetch details for vulnerability {vuln_id}: {e}")
+            return None
+    
+    def _fetch_vulnerability_details_parallel(self, vuln_ids: List[str], api: DynatraceApi) -> Dict[str, Dict]:
+        """Fetch vulnerability details in parallel using thread pool"""
+        details_map = {}
+        
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # Submit all tasks
+            future_to_id = {executor.submit(self._fetch_vulnerability_details, vuln_id, api): vuln_id 
+                           for vuln_id in vuln_ids}
+            
+            # Collect results as they complete
+            for future in as_completed(future_to_id):
+                vuln_id = future_to_id[future]
+                try:
+                    details = future.result()
+                    if details:
+                        details_map[vuln_id] = details
+                except Exception as e:
+                    self.logger.error(f"Exception fetching vulnerability {vuln_id}: {e}")
+        
+        return details_map
+    
     def _filter_by_management_zone(self, vulnerabilities: List[Dict], mz_name: str, api: DynatraceApi) -> List[Dict]:
-        """Filter vulnerabilities by management zone"""
+        """Filter vulnerabilities by management zone (using parallel fetching)"""
         filtered = []
         
+        # Collect all vulnerability IDs
+        vuln_ids = [vuln['securityProblemId'] for vuln in vulnerabilities]
+        
+        # Fetch all details in parallel
+        details_map = self._fetch_vulnerability_details_parallel(vuln_ids, api)
+        
+        # Filter by management zone
         for vuln in vulnerabilities:
-            # Get vulnerability details to check management zones
-            details = api.getSecurityProblemDetails(vuln['securityProblemId'])
-            
-            if 'managementZones' in details:
-                vuln_mzs = [mz['name'] for mz in details.get('managementZones', [])]
-                if mz_name in vuln_mzs:
-                    filtered.append(vuln)
+            vuln_id = vuln['securityProblemId']
+            if vuln_id in details_map:
+                details = details_map[vuln_id]
+                if 'managementZones' in details:
+                    vuln_mzs = [mz['name'] for mz in details.get('managementZones', [])]
+                    if mz_name in vuln_mzs:
+                        filtered.append(vuln)
         
         return filtered
     
     def _get_vulnerabilities_for_host(self, host_id: str, api: DynatraceApi) -> List[Dict]:
-        """Get all vulnerabilities affecting a specific host"""
+        """Get all vulnerabilities affecting a specific host (using parallel fetching)"""
         # Get security problems and filter by affected entities
         all_vulns = api.getSecurityProblems()
         host_vulns = []
         
+        # Collect all vulnerability IDs
+        vuln_ids = [vuln['securityProblemId'] for vuln in all_vulns]
+        
+        # Fetch all details in parallel
+        details_map = self._fetch_vulnerability_details_parallel(vuln_ids, api)
+        
+        # Filter by host
         for vuln in all_vulns:
-            details = api.getSecurityProblemDetails(vuln['securityProblemId'])
-            
-            # Check if host is in affected entities
-            if 'affectedEntities' in details:
-                for entity in details['affectedEntities']:
-                    if entity.get('entityId', {}).get('id', '') == host_id:
-                        host_vulns.append(vuln)
-                        break
+            vuln_id = vuln['securityProblemId']
+            if vuln_id in details_map:
+                details = details_map[vuln_id]
+                # Check if host is in affected entities
+                if 'affectedEntities' in details:
+                    for entity in details['affectedEntities']:
+                        if entity.get('entityId', {}).get('id', '') == host_id:
+                            host_vulns.append(vuln)
+                            break
         
         return host_vulns
     
     def _enrich_vulnerabilities(self, vulnerabilities: List[Dict], api: DynatraceApi) -> List[Dict]:
-        """Enrich vulnerabilities with full details"""
+        """Enrich vulnerabilities with full details (using parallel fetching)"""
         enriched = []
         
+        # Collect all vulnerability IDs
+        vuln_ids = [vuln['securityProblemId'] for vuln in vulnerabilities]
+        
+        # Fetch all details in parallel
+        details_map = self._fetch_vulnerability_details_parallel(vuln_ids, api)
+        
+        # Merge basic info with details
         for vuln in vulnerabilities:
-            try:
-                details = api.getSecurityProblemDetails(vuln['securityProblemId'])
-                
-                # Merge basic info with details
-                enriched_vuln = {**vuln, **details}
+            vuln_id = vuln['securityProblemId']
+            if vuln_id in details_map:
+                enriched_vuln = {**vuln, **details_map[vuln_id]}
                 enriched.append(enriched_vuln)
-                
-            except Exception as e:
-                self.logger.error(f"Failed to enrich vulnerability {vuln.get('securityProblemId')}: {e}")
+            else:
+                self.logger.warning(f"Failed to enrich vulnerability {vuln_id}")
                 enriched.append(vuln)
         
         return enriched

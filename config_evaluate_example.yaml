@@ -7,6 +7,12 @@
 # Assessment mode: 'evaluate' or 'compare'
 mode: evaluate
 
+# Performance Settings
+# Maximum number of concurrent API requests for fetching vulnerability details
+# Higher values = faster execution but more API load
+# Recommended: 10-20 (default: 10)
+max_workers: 10
+
 # Certification Environment Configuration
 certification_environment:
   # Dynatrace tenant URL (include https://)
