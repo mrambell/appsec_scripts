@@ -4,4 +4,4 @@ env/
 .vscode
 *.json
 output.log
-*test.py
+*test.pymy_config.yaml
