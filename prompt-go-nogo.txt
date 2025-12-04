@@ -1,0 +1,57 @@
+Production Promotion GO - NO GO script
+
+make a new script, taking in account dynatrace_api.py and vulnerabilities_by_host.py.
+This script will evaluate the vulnerabilities found on a “Certification Environment”, either standalone using a “Evaluate mode” or comparing vulnerabilities found against a production environment using a “Compare mode”
+
+It should have 
+- A configuration file in YAML format accepting 
+    - Mode: “Evaluate mode” or  “Compare mode”
+    - Dynatrace Environment URLs
+        - If on compare mode, differentiate between a “Certification environment” and “Production Environment”
+    - Dynatrace Tokens for the authentication
+        - If on compare mode, one token for each environment, under each environment yaml config
+    - Mode: Management Zone list or Host List 
+        - Mode Management Zone: expect management zone name list also in yaml format
+            - If on compare mode, each environment should have its own Management Zone list, one for each environment 
+    - Mode Host List:
+        - A list or array of hosts in yaml format
+            - If in compare mode, each environment should have its own hosts list, so one for each environment
+
+    - Produce also an 2x example config files, one for Evaluate Mode and one for Compare Mode
+- Depending on the mode, a logic to check vulnerabilities implementing this decision tree
+    - In any case, for the certification environment
+        - Check open vulnerabilities
+            - Prepare a digest of the vulnerabilities, where vulnerability name is colored in red and Davis Security Score colored in Orange, within the bash script.
+        - Go decision result
+            - If the searched hosts or management zones have NO critical or high vulnerabilities
+            - AND If NO vulnerability, regardless of the criticality, has with certainty NO vulnerable function in use
+            - Produce a summary of the decision and why it was taken.
+            - Add also a flag to only produce a meaningful machine readable GO result to pass as value to some other software or for a pipeline.
+        - No GO decision result 
+            - If elements checked have ANY critical OR high vulnerabilities
+            - OR If ANY vulnerability regardless of criticality has ANY vulnerable function in use or if Vulnerable function in use cannot be assessed. 
+            - Add also a flag to only produce a meaningful machine readable NO-GO result to pass as value to some other software or for a pipeline. Use also an Exit Flag in this case. This uses the same flag as for the GO result, it should be a generic flag.
+        - Then prepare a report, text form, with all vulnerabilities found
+            - Each vulnerability should present its associate processes and hosts as separate fields
+            - All available metadata for vulnerability, hosts and processes
+            - Default to JSON but add a flag to be able to change this to CSV format.
+    - In case the user chooses “Compare mode”
+        - Perform all the logic of Evaluate mode, BUT hold the Go and No Go decision logic
+        - The fetch vulnerabilities of the Production Environment, also using the Dynatrace API and check
+            - No new vulnerabilities introduced compared to Production
+        - Think if there are other comparative checks you can run. If you find meaningful checks suggest them for my acceptance to add to this list.
+        - Adjust Go and No Go decisions
+        - GO decision result
+            - If the comparative assessment with Production is positive and there is no regression AND
+            - For certification
+                - If the searched hosts or management zones have NO critical or high vulnerabilities 
+                - AND If NO vulnerability, regardless of the criticality, has with certainty NO vulnerable function in use
+                - Produce a summary of the decision and why it was taken.
+        - No GO decision result 
+            - If regression is introduced compared to production OR
+            - For certification
+                - If elements checked have ANY critical OR high vulnerabilities
+                - OR If ANY vulnerability regardless of criticality has ANY vulnerable function in use or if Vulnerable function in use cannot be assessed. 
+
+Add an option to activate in depth logging at each step.
+Produce meaningful usage guide and documentation. The usage guide should be available also at the help command line switch or -h
