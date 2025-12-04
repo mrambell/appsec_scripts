@@ -4,4 +4,6 @@ env/
 .vscode
 *.json
 output.log
-*test.pymy_config.yaml
+*test.py
+my_config.yaml
+tkn
