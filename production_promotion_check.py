@@ -223,10 +223,11 @@ class VulnerabilityAssessment:
             vuln_id = vuln['securityProblemId']
             if vuln_id in details_map:
                 details = details_map[vuln_id]
-                # Check if host is in affected entities
-                if 'affectedEntities' in details:
-                    for entity in details['affectedEntities']:
-                        if entity.get('entityId', {}).get('id', '') == host_id:
+                # Check if host is in relatedEntities.hosts
+                if 'relatedEntities' in details and 'hosts' in details['relatedEntities']:
+                    for host_entity in details['relatedEntities']['hosts']:
+                        # The host entity structure is: {"id": "HOST-xxx", "numberOfAffectedEntities": N, "affectedEntities": ["PGI-xxx", ...]}
+                        if host_entity.get('id') == host_id:
                             host_vulns.append(vuln)
                             break
         
