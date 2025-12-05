@@ -9,3 +9,4 @@ my_config.yaml
 tkn
 *.log
 tempconfig/
+production_promotion_check.log
