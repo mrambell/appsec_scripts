@@ -7,3 +7,4 @@ output.log
 *test.py
 my_config.yaml
 tkn
+*.log

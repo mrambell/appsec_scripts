@@ -46,6 +46,15 @@ class VulnerabilityAssessment:
         # Parallel execution settings
         self.max_workers = config.get('max_workers', 10)  # Default to 10 concurrent requests
         
+        # Assessment rules configuration
+        self.assessment_rules = config.get('assessment_rules', {})
+        self.excluded_cves = set(self.assessment_rules.get('excluded_cves', []))
+        self.severity_exclusions = self.assessment_rules.get('severity_exclusions', {})
+        self.thresholds = self.assessment_rules.get('thresholds', {})
+        
+        self.logger.info(f"Excluded CVEs: {self.excluded_cves}")
+        self.logger.info(f"Severity exclusions: {self.severity_exclusions}")
+        
         # Initialize Dynatrace API clients
         self._init_api_clients()
         
@@ -234,7 +243,7 @@ class VulnerabilityAssessment:
         return host_vulns
     
     def _enrich_vulnerabilities(self, vulnerabilities: List[Dict], api: DynatraceApi) -> List[Dict]:
-        """Enrich vulnerabilities with full details (using parallel fetching)"""
+        """Enrich vulnerabilities with full details (using parallel fetching) and apply exclusions"""
         enriched = []
         
         # Collect all vulnerability IDs
@@ -243,11 +252,19 @@ class VulnerabilityAssessment:
         # Fetch all details in parallel
         details_map = self._fetch_vulnerability_details_parallel(vuln_ids, api)
         
-        # Merge basic info with details
+        # Merge basic info with details and filter excluded CVEs
         for vuln in vulnerabilities:
             vuln_id = vuln['securityProblemId']
             if vuln_id in details_map:
                 enriched_vuln = {**vuln, **details_map[vuln_id]}
+                
+                # Check if vulnerability should be excluded based on CVE
+                cve_ids = enriched_vuln.get('cveIds', [])
+                if any(cve in self.excluded_cves for cve in cve_ids):
+                    self.logger.info(f"Excluding vulnerability {vuln_id} - CVE in exclusion list: {cve_ids}")
+                    continue
+                
+                enriched.append(enriched_vuln)
                 enriched.append(enriched_vuln)
             else:
                 self.logger.warning(f"Failed to enrich vulnerability {vuln_id}")
@@ -356,6 +373,12 @@ class VulnerabilityAssessment:
         for cve, cert_severity in cert_severity_map.items():
             if cve in prod_severity_map:
                 prod_severity = prod_severity_map[cve]
+                
+                # Check if severity_regression check is excluded for this severity level
+                severity_exclusion_list = self.severity_exclusions.get(cert_severity, [])
+                if 'severity_regression' in severity_exclusion_list:
+                    self.logger.debug(f"Skipping severity regression check for {cve} at {cert_severity} severity")
+                    continue
                 
                 # Check if severity increased in certification scope vs production scope
                 if severity_order.get(cert_severity, 0) > severity_order.get(prod_severity, 0):
@@ -523,20 +546,35 @@ class VulnerabilityAssessment:
         
         return decision
     
-    def _count_critical_high(self, vulnerabilities: List[Dict]) -> int:
-        """Count CRITICAL and HIGH severity vulnerabilities"""
+    def _count_high_severity_vulnerabilities(self, vulnerabilities: List[Dict]) -> int:
+        """Count CRITICAL and HIGH severity vulnerabilities, respecting exclusions"""
         count = 0
         for vuln in vulnerabilities:
-            risk_level = vuln.get('riskAssessment', {}).get('riskLevel', 'NONE')
+            risk_level = vuln.get('riskAssessment', {}).get('riskLevel', 'UNKNOWN')
             if risk_level in ['CRITICAL', 'HIGH']:
                 count += 1
         return count
     
-    def _check_vulnerable_functions_in_use(self, vulnerabilities: List[Dict]) -> int:
-        """Count vulnerabilities with vulnerable functions in use or assessment unavailable"""
+    def _count_vulnerable_functions_in_use(self, vulnerabilities: List[Dict]) -> int:
+        """Count vulnerabilities with vulnerable functions in use or unknown, respecting severity exclusions"""
         count = 0
+        allow_vuln_func_severities = self.thresholds.get('allow_vulnerable_function_for_severities', [])
+        
         for vuln in vulnerabilities:
+            risk_level = vuln.get('riskAssessment', {}).get('riskLevel', 'UNKNOWN')
             vuln_func_usage = vuln.get('riskAssessment', {}).get('vulnerableFunctionUsage', 'NOT_AVAILABLE')
+            
+            # Check if vulnerable_function check is excluded for this severity
+            severity_exclusion_list = self.severity_exclusions.get(risk_level, [])
+            if 'vulnerable_function' in severity_exclusion_list:
+                self.logger.debug(f"Skipping vulnerable function check for {risk_level} severity")
+                continue
+            
+            # Check if this severity is allowed to have vulnerable functions in use
+            if risk_level in allow_vuln_func_severities:
+                self.logger.debug(f"Allowing vulnerable function for {risk_level} severity (threshold)")
+                continue
+            
             # Fail if IN_USE or if assessment is NOT_AVAILABLE (cannot assess with certainty)
             if vuln_func_usage in ['IN_USE', 'NOT_AVAILABLE']:
                 count += 1
@@ -557,7 +595,14 @@ class VulnerabilityAssessment:
             risk_level = vuln.get('riskAssessment', {}).get('riskLevel', 'UNKNOWN')
             vuln_func = vuln.get('riskAssessment', {}).get('vulnerableFunctionUsage', 'NOT_AVAILABLE')
             
+            # Format CVE IDs display
+            if cve_ids:
+                cve_display = ', '.join(cve_ids)
+            else:
+                cve_display = f"{Colors.ORANGE}Unknown CVE{Colors.END}"
+            
             print(f"  • {Colors.RED}{vuln_name}{Colors.END}")
+            print(f"    CVE: {cve_display}")
             print(f"    Davis Security Score: {Colors.ORANGE}{risk_score}{Colors.END} | Severity: {risk_level}")
             print(f"    Vulnerable Function: {vuln_func}")
             print()
