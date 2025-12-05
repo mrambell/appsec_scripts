@@ -8,3 +8,4 @@ output.log
 my_config.yaml
 tkn
 *.log
+tempconfig/

@@ -304,6 +304,12 @@ class VulnerabilityAssessment:
         # Check for vulnerable function usage changes per PGI
         vuln_function_regression_result = self._check_vulnerable_function_regression_per_pgi(cert_vulns, prod_vulns)
         
+        # Check if new vulnerabilities should be considered a regression based on threshold
+        max_new_vulns = self.thresholds.get('max_new_vulnerabilities', -1)
+        new_vuln_regression = False
+        if max_new_vulns >= 0 and len(new_cves) > max_new_vulns:
+            new_vuln_regression = True
+        
         comparison = {
             'new_vulnerabilities': list(new_cves),
             'new_vulnerabilities_count': len(new_cves),
@@ -315,7 +321,7 @@ class VulnerabilityAssessment:
             'severity_regression_details': severity_regression_result['regressions'],
             'vulnerable_function_regression': vuln_function_regression_result['has_regression'],
             'vulnerable_function_regression_details': vuln_function_regression_result['regressions'],
-            'has_regression': len(new_cves) > 0 or severity_regression_result['has_regression'] or vuln_function_regression_result['has_regression']
+            'has_regression': new_vuln_regression or severity_regression_result['has_regression'] or vuln_function_regression_result['has_regression']
         }
         
         print(f"  New vulnerabilities: {Colors.RED if len(new_cves) > 0 else Colors.GREEN}{len(new_cves)}{Colors.END}")
@@ -484,12 +490,13 @@ class VulnerabilityAssessment:
         reasons = []
         
         # Analyze certification environment
-        critical_high_count = self._count_critical_high(cert_vulns)
-        vuln_func_in_use = self._check_vulnerable_functions_in_use(cert_vulns)
+        critical_high_count = self._count_high_severity_vulnerabilities(cert_vulns)
+        vuln_func_in_use = self._count_vulnerable_functions_in_use(cert_vulns)
+        max_allowed = self.thresholds.get('max_allowed_severity', 'HIGH')
         
         print(f"{Colors.BOLD}Certification Environment:{Colors.END}")
         print(f"  Total vulnerabilities: {len(cert_vulns)}")
-        print(f"  Critical/High severity: {Colors.RED if critical_high_count > 0 else Colors.GREEN}{critical_high_count}{Colors.END}")
+        print(f"  Vulnerabilities above {max_allowed} severity: {Colors.RED if critical_high_count > 0 else Colors.GREEN}{critical_high_count}{Colors.END}")
         print(f"  Vulnerable functions in use: {Colors.RED if vuln_func_in_use > 0 else Colors.GREEN}{vuln_func_in_use}{Colors.END}\n")
         
         # Display vulnerability digest
@@ -500,7 +507,8 @@ class VulnerabilityAssessment:
         has_vuln_func_issues = vuln_func_in_use > 0
         
         if has_critical_high:
-            reasons.append(f"Found {critical_high_count} CRITICAL or HIGH severity vulnerabilities")
+            max_allowed = self.thresholds.get('max_allowed_severity', 'HIGH')
+            reasons.append(f"Found {critical_high_count} vulnerabilities above {max_allowed} severity threshold")
         
         if has_vuln_func_issues:
             reasons.append(f"Found {vuln_func_in_use} vulnerabilities with vulnerable functions in use or assessment unavailable")
@@ -510,12 +518,25 @@ class VulnerabilityAssessment:
             comparison = results['comparison']
             has_regression = comparison['has_regression']
             
+            # Check max_new_vulnerabilities threshold
+            max_new_vulns = self.thresholds.get('max_new_vulnerabilities', -1)
+            new_vuln_count = comparison['new_vulnerabilities_count']
+            exceeds_new_vuln_threshold = False
+            
+            if max_new_vulns >= 0 and new_vuln_count > max_new_vulns:
+                exceeds_new_vuln_threshold = True
+                has_regression = True  # Treat as regression
+            
             print(f"{Colors.BOLD}Comparative Analysis:{Colors.END}")
-            print(f"  Regression detected: {Colors.RED if has_regression else Colors.GREEN}{has_regression}{Colors.END}\n")
+            print(f"  Regression detected: {Colors.RED if has_regression else Colors.GREEN}{has_regression}{Colors.END}")
+            if max_new_vulns >= 0:
+                print(f"  New vulnerabilities: {new_vuln_count} (max allowed: {max_new_vulns})")
+            print()
             
             if has_regression:
-                if comparison['new_vulnerabilities_count'] > 0:
-                    reasons.append(f"Introduced {comparison['new_vulnerabilities_count']} new vulnerabilities compared to production")
+                # Only report new vulnerabilities if they exceed the threshold or if no threshold is set
+                if exceeds_new_vuln_threshold:
+                    reasons.append(f"Introduced {new_vuln_count} new vulnerabilities (max allowed: {max_new_vulns})")
                 if comparison['severity_regression']:
                     reasons.append("Detected severity regression compared to production")
                 if comparison['vulnerable_function_regression']:
@@ -547,11 +568,19 @@ class VulnerabilityAssessment:
         return decision
     
     def _count_high_severity_vulnerabilities(self, vulnerabilities: List[Dict]) -> int:
-        """Count CRITICAL and HIGH severity vulnerabilities, respecting exclusions"""
+        """Count vulnerabilities at or above the configured max_allowed_severity threshold"""
+        # Severity order for comparison
+        severity_order = {'NONE': 0, 'LOW': 1, 'MEDIUM': 2, 'HIGH': 3, 'CRITICAL': 4}
+        max_allowed = self.thresholds.get('max_allowed_severity', 'HIGH')
+        max_allowed_level = severity_order.get(max_allowed, 3)
+        
         count = 0
         for vuln in vulnerabilities:
             risk_level = vuln.get('riskAssessment', {}).get('riskLevel', 'UNKNOWN')
-            if risk_level in ['CRITICAL', 'HIGH']:
+            vuln_level = severity_order.get(risk_level, 0)
+            
+            # Count if vulnerability severity is above the allowed threshold
+            if vuln_level > max_allowed_level:
                 count += 1
         return count
     
