@@ -14,6 +14,11 @@ Version: 1.0.0
 """
 
 import sys
+from pathlib import Path
+
+# Add parent directory to sys.path to import shared modules
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import yaml
 import json
 import csv
