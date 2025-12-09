@@ -24,6 +24,28 @@ from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dynatrace_api import DynatraceApi
+import io
+import builtins
+
+# Store original print
+_original_print = builtins.print
+
+# Quiet wrapper for DynatraceApi that suppresses progress dots
+class QuietDynatraceApi(DynatraceApi):
+    """Wrapper around DynatraceApi that suppresses output when quiet=True"""
+    def __init__(self, tenant, apiToken, verifySSL=True, quiet=False):
+        super().__init__(tenant, apiToken, verifySSL)
+        self._quiet = quiet
+        if quiet:
+            # Monkey-patch print globally to filter out dots
+            builtins.print = self._quiet_print
+    
+    def _quiet_print(self, *args, **kwargs):
+        """Filtered print that suppresses dots"""
+        # Only suppress single dot prints (the progress indicator)
+        if len(args) == 1 and args[0] == '.' and kwargs.get('end', '\n') == "" and kwargs.get('flush', False):
+            return  # Suppress the dot
+        _original_print(*args, **kwargs)  # Allow all other prints
 
 # ANSI Color codes for terminal output
 class Colors:
@@ -37,9 +59,10 @@ class Colors:
 class VulnerabilityAssessment:
     """Handles vulnerability assessment logic for GO/NO-GO decisions"""
     
-    def __init__(self, config: Dict, verbose: bool = False):
+    def __init__(self, config: Dict, verbose: bool = False, quiet: bool = False):
         self.config = config
         self.verbose = verbose
+        self.quiet = quiet  # Suppress all output for machine-readable mode
         self.mode = config.get('mode', 'evaluate').lower()
         self.logger = logging.getLogger(__name__)
         
@@ -62,10 +85,11 @@ class VulnerabilityAssessment:
         """Initialize Dynatrace API client(s) based on mode"""
         if self.mode == 'evaluate':
             cert_config = self.config['certification_environment']
-            self.cert_api = DynatraceApi(
+            self.cert_api = QuietDynatraceApi(
                 cert_config['url'],
                 cert_config['token'],
-                cert_config.get('verify_ssl', True)
+                cert_config.get('verify_ssl', True),
+                quiet=self.quiet
             )
             self.logger.info(f"Initialized API for certification environment: {cert_config['url']}")
         
@@ -73,15 +97,17 @@ class VulnerabilityAssessment:
             cert_config = self.config['certification_environment']
             prod_config = self.config['production_environment']
             
-            self.cert_api = DynatraceApi(
+            self.cert_api = QuietDynatraceApi(
                 cert_config['url'],
                 cert_config['token'],
-                cert_config.get('verify_ssl', True)
+                cert_config.get('verify_ssl', True),
+                quiet=self.quiet
             )
-            self.prod_api = DynatraceApi(
+            self.prod_api = QuietDynatraceApi(
                 prod_config['url'],
                 prod_config['token'],
-                prod_config.get('verify_ssl', True)
+                prod_config.get('verify_ssl', True),
+                quiet=self.quiet
             )
             self.logger.info(f"Initialized API for certification: {cert_config['url']}")
             self.logger.info(f"Initialized API for production: {prod_config['url']}")
@@ -89,9 +115,10 @@ class VulnerabilityAssessment:
     def run_assessment(self) -> Dict:
         """Main assessment execution"""
         self.logger.info(f"Starting assessment in {self.mode.upper()} mode")
-        print(f"\n{Colors.BOLD}=== Production Promotion Assessment ==={Colors.END}")
-        print(f"Mode: {Colors.BLUE}{self.mode.upper()}{Colors.END}")
-        print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        if not self.quiet:
+            print(f"\n{Colors.BOLD}=== Production Promotion Assessment ==={Colors.END}")
+            print(f"Mode: {Colors.BLUE}{self.mode.upper()}{Colors.END}")
+            print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         
         # Get certification environment vulnerabilities
         cert_vulns = self._fetch_vulnerabilities('certification_environment', self.cert_api)
@@ -126,7 +153,8 @@ class VulnerabilityAssessment:
     def _fetch_vulnerabilities(self, env_name: str, api: DynatraceApi) -> List[Dict]:
         """Fetch vulnerabilities from Dynatrace environment"""
         self.logger.info(f"Fetching vulnerabilities for {env_name}")
-        print(f"Fetching vulnerabilities from {env_name}...")
+        if not self.quiet:
+            print(f"Fetching vulnerabilities from {env_name}...")
         
         env_config = self.config[env_name]
         scope_mode = env_config.get('scope_mode', 'management_zone')
@@ -160,7 +188,8 @@ class VulnerabilityAssessment:
         enriched_vulns = self._enrich_vulnerabilities(all_vulnerabilities, api)
         
         self.logger.info(f"Found {len(enriched_vulns)} vulnerabilities in {env_name}")
-        print(f"  → Found {len(enriched_vulns)} vulnerabilities\n")
+        if not self.quiet:
+            print(f"  → Found {len(enriched_vulns)} vulnerabilities\n")
         
         return enriched_vulns
     
@@ -275,7 +304,8 @@ class VulnerabilityAssessment:
     def _compare_vulnerabilities(self, cert_vulns: List[Dict], prod_vulns: List[Dict]) -> Dict:
         """Compare certification and production vulnerabilities"""
         self.logger.info("Performing comparative analysis")
-        print(f"{Colors.BOLD}Comparing Certification vs Production...{Colors.END}")
+        if not self.quiet:
+            print(f"{Colors.BOLD}Comparing Certification vs Production...{Colors.END}")
         
         # Extract CVE IDs for comparison
         cert_cves = set()
@@ -324,11 +354,12 @@ class VulnerabilityAssessment:
             'has_regression': new_vuln_regression or severity_regression_result['has_regression'] or vuln_function_regression_result['has_regression']
         }
         
-        print(f"  New vulnerabilities: {Colors.RED if len(new_cves) > 0 else Colors.GREEN}{len(new_cves)}{Colors.END}")
-        print(f"  Resolved vulnerabilities: {Colors.GREEN}{len(resolved_cves)}{Colors.END}")
-        print(f"  Common vulnerabilities: {len(common_cves)}")
-        print(f"  Severity regressions: {Colors.RED if severity_regression_result['has_regression'] else Colors.GREEN}{len(severity_regression_result['regressions'])}{Colors.END}")
-        print(f"  Vulnerable function regressions: {Colors.RED if vuln_function_regression_result['has_regression'] else Colors.GREEN}{len(vuln_function_regression_result['regressions'])}{Colors.END}\n")
+        if not self.quiet:
+            print(f"  New vulnerabilities: {Colors.RED if len(new_cves) > 0 else Colors.GREEN}{len(new_cves)}{Colors.END}")
+            print(f"  Resolved vulnerabilities: {Colors.GREEN}{len(resolved_cves)}{Colors.END}")
+            print(f"  Common vulnerabilities: {len(common_cves)}")
+            print(f"  Severity regressions: {Colors.RED if severity_regression_result['has_regression'] else Colors.GREEN}{len(severity_regression_result['regressions'])}{Colors.END}")
+            print(f"  Vulnerable function regressions: {Colors.RED if vuln_function_regression_result['has_regression'] else Colors.GREEN}{len(vuln_function_regression_result['regressions'])}{Colors.END}\n")
         
         return comparison
     
@@ -484,7 +515,8 @@ class VulnerabilityAssessment:
     def _make_decision(self, results: Dict) -> Dict:
         """Make GO/NO-GO decision based on assessment results"""
         self.logger.info("Making GO/NO-GO decision")
-        print(f"{Colors.BOLD}=== Decision Analysis ==={Colors.END}\n")
+        if not self.quiet:
+            print(f"{Colors.BOLD}=== Decision Analysis ==={Colors.END}\n")
         
         cert_vulns = results['certification']['vulnerabilities']
         reasons = []
@@ -494,13 +526,14 @@ class VulnerabilityAssessment:
         vuln_func_in_use = self._count_vulnerable_functions_in_use(cert_vulns)
         max_allowed = self.thresholds.get('max_allowed_severity', 'HIGH')
         
-        print(f"{Colors.BOLD}Certification Environment:{Colors.END}")
-        print(f"  Total vulnerabilities: {len(cert_vulns)}")
-        print(f"  Vulnerabilities above {max_allowed} severity: {Colors.RED if critical_high_count > 0 else Colors.GREEN}{critical_high_count}{Colors.END}")
-        print(f"  Vulnerable functions in use: {Colors.RED if vuln_func_in_use > 0 else Colors.GREEN}{vuln_func_in_use}{Colors.END}\n")
-        
-        # Display vulnerability digest
-        self._display_vulnerability_digest(cert_vulns)
+        if not self.quiet:
+            print(f"{Colors.BOLD}Certification Environment:{Colors.END}")
+            print(f"  Total vulnerabilities: {len(cert_vulns)}")
+            print(f"  Vulnerabilities above {max_allowed} severity: {Colors.RED if critical_high_count > 0 else Colors.GREEN}{critical_high_count}{Colors.END}")
+            print(f"  Vulnerable functions in use: {Colors.RED if vuln_func_in_use > 0 else Colors.GREEN}{vuln_func_in_use}{Colors.END}\n")
+            
+            # Display vulnerability digest
+            self._display_vulnerability_digest(cert_vulns)
         
         # Base decision criteria
         has_critical_high = critical_high_count > 0
@@ -527,11 +560,12 @@ class VulnerabilityAssessment:
                 exceeds_new_vuln_threshold = True
                 has_regression = True  # Treat as regression
             
-            print(f"{Colors.BOLD}Comparative Analysis:{Colors.END}")
-            print(f"  Regression detected: {Colors.RED if has_regression else Colors.GREEN}{has_regression}{Colors.END}")
-            if max_new_vulns >= 0:
-                print(f"  New vulnerabilities: {new_vuln_count} (max allowed: {max_new_vulns})")
-            print()
+            if not self.quiet:
+                print(f"{Colors.BOLD}Comparative Analysis:{Colors.END}")
+                print(f"  Regression detected: {Colors.RED if has_regression else Colors.GREEN}{has_regression}{Colors.END}")
+                if max_new_vulns >= 0:
+                    print(f"  New vulnerabilities: {new_vuln_count} (max allowed: {max_new_vulns})")
+                print()
             
             if has_regression:
                 # Only report new vulnerabilities if they exceed the threshold or if no threshold is set
@@ -611,6 +645,8 @@ class VulnerabilityAssessment:
     
     def _display_vulnerability_digest(self, vulnerabilities: List[Dict]):
         """Display a colored digest of vulnerabilities"""
+        if self.quiet:
+            return
         print(f"{Colors.BOLD}Vulnerability Digest:{Colors.END}\n")
         
         if not vulnerabilities:
@@ -651,6 +687,9 @@ class VulnerabilityAssessment:
     
     def _display_decision(self, decision: Dict):
         """Display the final decision with color"""
+        if self.quiet:
+            return  # Skip display in quiet mode
+        
         result = decision['result']
         
         if result == 'GO':
@@ -944,7 +983,10 @@ def main():
     parser.add_argument('-f', '--format', dest='output_format',
                        help='Report format (json or csv)', default='json')
     parser.add_argument('-m', '--machine-readable', dest='machine_readable',
-                       help='Output only machine-readable decision', action='store_true')
+                       help='Output only machine-readable decision (GO or NO-GO)', action='store_true')
+    parser.add_argument('--exit-code', dest='use_exit_code',
+                       help='Exit with code 1 on NO-GO, 0 on GO (default: enabled)', 
+                       action='store_true', default=True)
     parser.add_argument('-v', '--verbose', dest='verbose',
                        help='Enable detailed logging', action='store_true')
     parser.add_argument('-h', '--help', action='store_true', dest='show_help',
@@ -967,7 +1009,7 @@ def main():
         logger.info(f"Loaded configuration from {args.config_file}")
         
         # Run assessment
-        assessment = VulnerabilityAssessment(config, args.verbose)
+        assessment = VulnerabilityAssessment(config, args.verbose, quiet=args.machine_readable)
         results = assessment.run_assessment()
         
         # Generate output file name if not provided
@@ -985,11 +1027,17 @@ def main():
         decision_result = results['decision']['result']
         
         if args.machine_readable:
-            # Simple machine-readable output
-            print(decision_result)
+            # Simple machine-readable output: GO or NO-GO
+            import sys
+            sys.stdout.flush()  # Ensure stdout is working
+            print(decision_result, flush=True)
         
-        # Exit with appropriate code
-        exit_code = 0 if decision_result == 'GO' else 1
+        # Exit with appropriate code (if enabled)
+        if args.use_exit_code:
+            exit_code = 0 if decision_result == 'GO' else 1
+        else:
+            exit_code = 0
+        
         logger.info(f"Assessment complete. Decision: {decision_result}, Exit code: {exit_code}")
         sys.exit(exit_code)
     
