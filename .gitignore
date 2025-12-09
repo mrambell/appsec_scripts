@@ -10,3 +10,4 @@ tkn
 *.log
 tempconfig/
 production_promotion_check.log
+__pycache__/
