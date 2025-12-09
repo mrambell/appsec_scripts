@@ -1028,8 +1028,6 @@ def main():
         
         if args.machine_readable:
             # Simple machine-readable output: GO or NO-GO
-            import sys
-            sys.stdout.flush()  # Ensure stdout is working
             print(decision_result, flush=True)
         
         # Exit with appropriate code (if enabled)
