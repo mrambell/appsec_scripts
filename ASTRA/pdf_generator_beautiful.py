@@ -807,13 +807,15 @@ class BeautifulPDFGenerator:
             entity_name = entity.get('entity_name', 'Unknown')
             entity_id = entity.get('entity_id', '')
             entity_risk = entity.get('risk_score', 0)
+            host_name = entity.get('host_name', '')
+            display_name = f"{entity_name} [{host_name}]" if host_name else entity_name
             
             # Add entity header
             if entity_idx > 1:
                 story.append(Spacer(1, 0.7*cm))
             
             story.append(Paragraph(
-                f"<b>{entity_idx}. {entity_name}</b>",
+                f"<b>{entity_idx}. {display_name}</b>",
                 styles['SubsectionHeading']
             ))
             story.append(Paragraph(
