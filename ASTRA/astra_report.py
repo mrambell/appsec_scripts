@@ -1416,12 +1416,23 @@ def run_assessment(config: AstraConfig) -> str:
     # Log overall risk (HRP v2.0: 0-100 scale)
     logger.info(f"Overall Risk Score: {overall_risk['score']}/100 ({overall_risk['rating']})")
     
+    # Build a mapping from PGI entity ID to host display name
+    pgi_to_host = {}
+    for host in data.get('hosts', []):
+        host_name = host.get('displayName', '')
+        relationships = host.get('toRelationships', {}).get('isProcessOf', [])
+        for process in relationships:
+            pgi_id = process.get('id')
+            if pgi_id:
+                pgi_to_host[pgi_id] = host_name
+
     # Calculate entity-level risks
     # Note: Only calculates for process groups in data['process_groups'], which are already filtered
     entity_risks = []
     for pg in data['process_groups']:
         entity_risk = calculator.calculate_entity_risk(pg, data['security_problems'])
         if entity_risk['vulnerability_count'] > 0:
+            entity_risk['host_name'] = pgi_to_host.get(entity_risk.get('entity_id', ''), '')
             entity_risks.append(entity_risk)
     
     logger.info(f"Analyzed {len(entity_risks)} entities with vulnerabilities")
